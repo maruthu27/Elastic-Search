@@ -1,0 +1,122 @@
+This article will help us migrate the ElasticSearch data. 
+
+The document is based in a step by step plan where we have two instances:
+
+Caption:
+
+Instance1 - data to be migrated
+
+Instance2 - receiving the migrated data
+
+ElasticSearch - ES
+
+Before doing the actions/tasks below perform an EBS snapshot  of the EBS attached to Instance1
+
+ 
+
+
+Tasks
+Using AWS console create a SG with ssh port 22 open.
+
+1.1.  On the Instance1, close all connections, replacing the SG  for the new one created on the previous step.
+
+1.2. SSH to Instance1, create a new ssh key and publish the pub ssh key in Instance2  for the user root
+
+$ > ssh-keygen -t rsa -C "stg_ES_migrate"
+1.3. SSH to Instance2 and create a directory on the /var/data/ called localRepo
+
+$> mkdir -p /var/data/localRepo && chown elasticsearch:elasticsearch /var/data/localRepo
+2. SSH to Instance1, execute the snapshot to backup ES data, wait for the snapshot to finished.
+
+the snapshot must be done using the ES CLI
+
+2.1. When the snapshot is finished, copy the same through ssh to the /var/data/localRepo located in Instance2 (use screen command to do the ssh command)
+Note: in this case we must use the private ip of the instance to copy the snapshot data.
+
+$> scp -r /es-backup/<dir name> root@privateIP:/var/data/localRepo/
+3. After the copy finished, ssh to Instance2 and config the /var/data/localRepo in the ES elasticsearch.yml
+
+$ > vi elasticsearch.yml add the next line:
+
+path.repo: ["/var/data/localRepo"]
+
+$ > systemctl restart elasticsearch
+
+$ > curl -X PUT "localhost:9200/_snapshot/localrepo?verify=false&pretty" -H 'Content-Type: application/json' -d'
+{
+   "type": "fs",
+   "settings": {
+       "compress" : true,
+       "location": "/var/data/localRepo"
+   }
+}
+'
+3.1. Check if you have the repo configured
+
+$ > curl -X GET "localhost:9200/_snapshot/localrepo/_all?pretty"
+4. Verify if you have open indices, listing all indices
+
+$ > curl -X GET "localhost:9200/_cat/indices?pretty"
+4.1. The restore to be successful you need to close all the indices.
+
+$> curl -X GET "localhost:9200/_cat/indices?pretty"  > /tmp/open_indices.txt && awk '{print $3}' /tmp/open_indices.txt > /tmp/indices_to_close.txt
+$> while read line; do curl -X POST "localhost:9200/$line/_close?pretty"; done < /tmp/indices_to_close.txt
+4.2. Check if all indices are closed
+
+$ > curl -X GET "localhost:9200/_cat/indices?pretty"
+5. Do the restore
+
+curl -X POST "localhost:9200/_snapshot/localrepo/<dir name>/_restore?pretty"
+{
+  "accepted" : true
+}
+5.1. Monitor the snapshot
+
+$ > curl -X GET "localhost:9200/_snapshot/vagrant/8nov2019?pretty"
+
+     ],
+      "state" : "SUCCESS",
+      "start_time" : "2019-11-08T14:37:53.990Z",
+      "start_time_in_millis" : 1573223873990,
+      "end_time" : "2019-11-08T14:40:28.231Z",
+      "end_time_in_millis" : 1573224028231,
+      "duration_in_millis" : 154241,
+      "failures" : [ ],
+      "shards" : {
+        "total" : 1206,
+        "failed" : 0,
+        "successful" : 1206
+      }
+    }
+  ]
+}
+5.2. After the restore open all the indices that were closed:
+
+$> while read line; do curl -X POST "localhost:9200/$line/_open?pretty"; done < /tmp/indices_to_close.txt
+5.3. Check if the indices are open.
+
+$> curl -X GET "localhost:9200/_cat/indices?pretty"
+
+yellow open quest.acct_eod_20190913           2LaQ1SYLRFq6hsv10TjY_g 5 1        0      0    810b    810b
+yellow open quest.org                         MJW_wBQXQW25BJ8KWjQmWA 5 1    55404     20    34mb    34mb
+yellow open quest-test.entl                   mRASuBaZQKKmVh_WdHPSJw 5 1     4107      0 499.4kb 499.4kb
+yellow open conductor_task_log_20191042       nMSOXwU7Q7akDAZSlZ3CUQ 5 1        0      0    810b    810b
+yellow open quest.acct_intraday_20190919      _nldt0grRSq9zYmirkqhCw 5 1        0      0    955b    955b
+yellow open quest-test.acct_intraday_20190904 BN1ulhi2Sn6mjJFrtf2wTg 5 1        0      0    955b    955b
+yellow open quest.acct_eod_20191029           ECyXrdAuR4WsEGbpwcNKfA 5 1        0      0    810b    810b
+yellow open quest-nd.rep                      l0nGLoATQRSDffu-3JWRGg 5 1       59      0 185.5kb 185.5kb
+yellow open quest.acct_intraday_20191010      k2-sm71PRHCi1cPOKQ2asw 5 1        0      0    955b    955b
+yellow open quest-test.acct_intraday_20190914 jGiIVXXMQ2--Hq26dp9PAw 5 1        0      0    955b    955b
+yellow open quest.acct_eod_20190927           36-o8YAEReObtQNfrE0TLg 5 1        0      0    955b    955b
+yellow open quest.acct_eod_20191011           O-_9ImiXTXStOxfZ136Hzw 5 1        0      0    955b    955b
+yellow open quest-nd.nots 
+5.4. Using AWS console stop the instance Instance1:
+
+In case Instance1 has EIP detach the IP and attach to Instance2
+
+In case there is an ELB create the new config. 
+
+6. Verify if the new ES is working properly remove the localrepo.
+
+$ > curl -X DELETE "localhost:9200/_snapshot/localrepo?pretty"
+ 
